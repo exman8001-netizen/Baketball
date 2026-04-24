@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Socket } from "socket.io-client";
 import { PhysicsConfig, HoopConfig, BallConfig, Player, RoomConfig, RoomObject } from "../types";
-import { Crown, Zap, X } from "lucide-react";
+import { Crown, Zap, X, Trophy, Skull, Target } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { RankingOverlay } from "./RankingOverlay";
+import { UserProfileModal } from "./UserProfileModal";
 
 interface GameCanvasProps {
   socket: Socket;
@@ -402,7 +404,11 @@ const drawBall = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: n
     material, 
     grooveThickness,
     showGlow,
+    printText,
     printedNumber,
+    playerName,
+    teamName,
+    teamLogo,
     reflectionIntensity,
     auraType,
     airLevel = 1.0
@@ -492,13 +498,35 @@ const drawBall = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: n
 
   ctx.globalAlpha = 1.0;
 
-  // Text
-  if (printedNumber) {
+  // Player/Team Branding Text
+  if (printedNumber || teamName || playerName || printText) {
     ctx.fillStyle = lineColor;
-    ctx.font = `bold ${adjustedRadius * 0.5}px sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(printedNumber, 0, adjustedRadius * 0.1);
+    
+    // 1. Player Name (Top)
+    if (playerName || printText) {
+       ctx.font = `bold ${adjustedRadius * 0.16}px sans-serif`;
+       ctx.fillText((playerName || printText).toUpperCase(), 0, -adjustedRadius * 0.45);
+    }
+
+    // 2. Team Logo (Center/Topish)
+    if (teamLogo) {
+       ctx.font = `${adjustedRadius * 0.35}px sans-serif`;
+       ctx.fillText(teamLogo, 0, -adjustedRadius * 0.1);
+    }
+
+    // 3. Team Name (Bottom)
+    if (teamName) {
+       ctx.font = `bold ${adjustedRadius * 0.14}px sans-serif`;
+       ctx.fillText(teamName.toUpperCase(), 0, adjustedRadius * 0.45);
+    }
+
+    // 4. Jersey Number
+    if (printedNumber) {
+      ctx.font = `900 ${adjustedRadius * 0.55}px sans-serif`;
+      ctx.fillText(printedNumber, 0, adjustedRadius * 0.15);
+    }
   }
 
   // 3. Specular Highlights
@@ -524,22 +552,44 @@ const drawBall = (ctx: CanvasRenderingContext2D, x: number, y: number, radius: n
   ctx.restore();
 };
 
-const drawStats = (ctx: CanvasRenderingContext2D, x: number, y: number, hp: number, maxHp: number, air: number) => {
-  const barW = 40;
-  const barH = 4;
-  const offset = 35;
+const drawStats = (ctx: CanvasRenderingContext2D, x: number, y: number, hp: number, maxHp: number, air: number, level?: number, airXp?: number) => {
+  const barW = 50;
+  const barH = 5;
+  const offset = 45;
   
+  // Level Text
+  if (level !== undefined) {
+    ctx.fillStyle = "white";
+    ctx.font = "bold 10px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(`LVL ${level}`, x, y - offset - 15);
+  }
+
   // HP Bar
   ctx.fillStyle = "rgba(0,0,0,0.5)";
   ctx.fillRect(x - barW/2, y - offset, barW, barH);
   ctx.fillStyle = "#10b981";
-  ctx.fillRect(x - barW/2, y - offset, barW * (hp / maxHp), barH);
+  ctx.fillRect(x - barW/2, y - offset, barW * Math.max(0, Math.min(1, hp / maxHp)), barH);
   
-  // Air Bar
+  // Air XP / Progress Bar
   ctx.fillStyle = "rgba(0,0,0,0.5)";
-  ctx.fillRect(x - barW/2, y - offset + 6, barW, barH);
+  ctx.fillRect(x - barW/2, y - offset + 7, barW, barH);
+  
+  // If airXp is negative, show red leak indicator
+  if (airXp !== undefined && airXp < 0) {
+    ctx.fillStyle = "#ef4444";
+    ctx.fillRect(x - barW/2, y - offset + 7, barW * Math.min(1, Math.abs(airXp) / 100), barH);
+  } else if (airXp !== undefined) {
+    const xpInLevel = airXp % 100;
+    ctx.fillStyle = "#e9d5ff"; // Light purple for XP
+    ctx.fillRect(x - barW/2, y - offset + 7, barW * (xpInLevel / 100), barH);
+  }
+  
+  // Visual Air Level (Small bar)
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(x - barW/2, y - offset + 14, barW, 2);
   ctx.fillStyle = "#0ea5e9";
-  ctx.fillRect(x - barW/2, y - offset + 6, barW * air, barH);
+  ctx.fillRect(x - barW/2, y - offset + 14, barW * air, 2);
 };
 
 function darkenColor(hex: string, percent: number): string {
@@ -564,6 +614,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
 
   const [gameStatus, setGameStatus] = useState<'playing' | 'gameOver' | 'eliminated'>('playing');
   const [timeRemaining, setTimeRemaining] = useState(roomConfig?.matchTimeLimit || 600);
+  const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   const [showAd, setShowAd] = useState(false);
   const [adCountdown, setAdCountdown] = useState(30);
   const [canSkipAd, setCanSkipAd] = useState(false);
@@ -648,7 +699,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
     targetX: 400,
     lastY: 500,
     rotation: 0,
-    jumpsAvailable: physics.extraJumps + 1,
+    jumpsAvailable: (ballConfig.extraJumps || 0) + 1,
     lastJumpTime: 0,
     squash: 1,
     stretch: 1,
@@ -668,6 +719,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
     maxEnergy: ballConfig.maxEnergy || 100,
     airLevel: ballConfig.airLevel || 1.0,
     maxAirLevel: ballConfig.maxAirLevel || 1.0,
+    airXp: 0,
+    level: 1,
+    isLeaking: false,
+    leakTimer: 0,
 
     // Burnout State
     isBurnoutCharging: false,
@@ -676,6 +731,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
 
     // Interaction Subtlety State
     lastOnBackboardHoopId: null as (number | null),
+    lastAttackerId: null as (string | null),
     backboardJumpCount: 0,
     wiggleCount: 0,
     lastWiggleDir: 0,
@@ -769,7 +825,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
   };
 
   useEffect(() => {
-    socket.on("hoop:spawned", handleSpawn);
+    if (socket) {
+      socket.on("hoop:spawned", handleSpawn);
+      socket.on("object:destroyed", (data: { objectId: string }) => {
+        roomObjectsRef.current = roomObjectsRef.current.map(o => 
+          o.id === data.objectId ? { ...o, isDestroyed: true } : o
+        );
+      });
+    }
     
     // Initial jump
     playerPosRef.current.vy = physicsRef.current.jumpForce;
@@ -800,6 +863,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
         return;
       }
       
+      // Energy Recharge
+      const energyRecSpeed = ballConfig.energyRechargeSpeed || 5;
+      if (player.energy < (ballConfig.maxEnergy || 100)) {
+         player.energy += energyRecSpeed * 0.05;
+         if (player.energy > (ballConfig.maxEnergy || 100)) player.energy = ballConfig.maxEnergy || 100;
+      }
+
       // Update physics
       if (player.isStuckOnRim) {
           if (now > player.stuckUntil) {
@@ -817,7 +887,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
               // Score Rim Roll
               if (hConfig.scoreRimRoll !== 0 && Math.random() < 0.1) {
                   scoreRef.current += (hConfig.scoreRimRoll / 10);
-                  socket.emit("score:update", { score: Math.round(scoreRef.current), baskets: basketsRef.current });
+                  socket.emit("score:update", { 
+                    score: Math.round(scoreRef.current), 
+                    baskets: basketsRef.current,
+                    level: playerPosRef.current.level,
+                    airXp: playerPosRef.current.airXp
+                  });
               }
 
               const rollX = hoop.x + Math.cos(player.rimRollAngle) * player.rimRollRadius;
@@ -950,32 +1025,78 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             player.vy = 0;
             player.vx *= pConfig.groundFriction;
           }
-          player.jumpsAvailable = pConfig.extraJumps + 1;
+          player.jumpsAvailable = (ballConfig.extraJumps || 0) + 1;
         }
-        if (player.y < pConfig.hitboxSize) {
-          player.y = pConfig.hitboxSize;
-          player.vy = Math.abs(player.vy) * 0.5;
+        // HELPER: Check if point (x,y) is inside any window
+        const rConf = roomConfigRef.current;
+        const windows = rConf?.windows || [];
+        const isInWindow = (x: number, y: number) => {
+          return windows.some(w => x >= w.x - w.width/2 && x <= w.x + w.width/2 && y >= w.y - w.height/2 && y <= w.y + w.height/2);
+        };
+
+        if (rConf?.hasCeiling) {
+          const ceilH = rConf.ceilingHeight || 200;
+          if (player.y < ceilH + pConfig.hitboxSize && !isInWindow(player.x, player.y)) {
+             player.y = ceilH + pConfig.hitboxSize;
+             player.vy = Math.abs(player.vy) * 0.5 * pConfig.wallBounce;
+             shakeRef.current += Math.abs(player.vy) * 0.2;
+          }
+        } else {
+          if (player.y < pConfig.hitboxSize) {
+            player.y = pConfig.hitboxSize;
+            player.vy = Math.abs(player.vy) * 0.5;
+          }
         }
       }
 
-      if (player.x < pConfig.hitboxSize) {
-        const impact = Math.abs(player.vx);
-        player.x = pConfig.hitboxSize;
-        player.vx = Math.abs(player.vx) * pConfig.wallBounce;
-        if (impact > 10) {
-           player.hp = Math.max(0, player.hp - impact * 0.2);
-           player.airLevel = Math.max(0.3, player.airLevel - 0.005);
-           shakeRef.current += impact * 0.5;
+      const rConf = roomConfigRef.current;
+      const windows = rConf?.windows || [];
+      const isInWindow = (x: number, y: number) => {
+          return windows.some(w => x >= w.x - w.width/2 && x <= w.x + w.width/2 && y >= w.y - w.height/2 && y <= w.y + w.height/2);
+      };
+
+      if (rConf?.hasWall) {
+        const wallW = rConf.wallWidth || 100;
+        // Left Wall
+        if (player.x < wallW + pConfig.hitboxSize && !isInWindow(player.x, player.y)) {
+           const impact = Math.abs(player.vx);
+           player.x = wallW + pConfig.hitboxSize;
+           player.vx = Math.abs(player.vx) * pConfig.wallBounce;
+           if (impact > 10) {
+              player.hp = Math.max(0, player.hp - impact * 0.2);
+              shakeRef.current += impact * 0.5;
+           }
         }
-      }
-      if (player.x > hConfig.worldWidth - pConfig.hitboxSize) {
-        const impact = Math.abs(player.vx);
-        player.x = hConfig.worldWidth - pConfig.hitboxSize;
-        player.vx = -Math.abs(player.vx) * pConfig.wallBounce;
-        if (impact > 10) {
-           player.hp = Math.max(0, player.hp - impact * 0.2);
-           player.airLevel = Math.max(0.3, player.airLevel - 0.005);
-           shakeRef.current += impact * 0.5;
+        // Right Wall
+        if (player.x > hConfig.worldWidth - wallW - pConfig.hitboxSize && !isInWindow(player.x, player.y)) {
+           const impact = Math.abs(player.vx);
+           player.x = hConfig.worldWidth - wallW - pConfig.hitboxSize;
+           player.vx = -Math.abs(player.vx) * pConfig.wallBounce;
+           if (impact > 10) {
+              player.hp = Math.max(0, player.hp - impact * 0.2);
+              shakeRef.current += impact * 0.5;
+           }
+        }
+      } else {
+        if (player.x < pConfig.hitboxSize) {
+          const impact = Math.abs(player.vx);
+          player.x = pConfig.hitboxSize;
+          player.vx = Math.abs(player.vx) * pConfig.wallBounce;
+          if (impact > 10) {
+            player.hp = Math.max(0, player.hp - impact * 0.2);
+            player.airLevel = Math.max(0.3, player.airLevel - 0.005);
+            shakeRef.current += impact * 0.5;
+          }
+        }
+        if (player.x > hConfig.worldWidth - pConfig.hitboxSize) {
+          const impact = Math.abs(player.vx);
+          player.x = hConfig.worldWidth - pConfig.hitboxSize;
+          player.vx = -Math.abs(player.vx) * pConfig.wallBounce;
+          if (impact > 10) {
+            player.hp = Math.max(0, player.hp - impact * 0.2);
+            player.airLevel = Math.max(0.3, player.airLevel - 0.005);
+            shakeRef.current += impact * 0.5;
+          }
         }
       }
 
@@ -996,12 +1117,38 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
       roomObjectsRef.current.forEach(obj => {
         if (obj.isDestroyed) return;
 
-        // Update Object Movement (Elevators)
-        if (obj.behavior === 'moving' || obj.type === 'elevator') {
+        // 1. Movement System
+        if (obj.movement && obj.movement.type !== 'none' && obj.movement.isActive) {
+           const { type, speed, range, phase = 0 } = obj.movement;
+           const t = now * 0.001 * speed + phase;
+           
+           if (type === 'horizontal') {
+              obj.x = (obj.initialPos?.x || obj.x) + Math.sin(t) * range;
+           } else if (type === 'vertical') {
+              obj.y = (obj.initialPos?.y || obj.y) + Math.sin(t) * range;
+           } else if (type === 'circular') {
+              obj.x = (obj.initialPos?.x || obj.x) + Math.cos(t) * range;
+              obj.y = (obj.initialPos?.y || obj.y) + Math.sin(t) * range;
+           }
+        } else if (obj.behavior === 'moving' || obj.type === 'elevator') {
           const range = obj.config?.range || obj.movementRange || 400;
           const speed = obj.config?.speed || obj.movementSpeed || 2;
           const initialY = obj.initialPos?.y || obj.y;
           obj.y = initialY + Math.sin(now * 0.002 * speed) * range;
+        }
+        
+        // Logic Propagation
+        if (obj.logic?.targetId) {
+           const target = roomObjectsRef.current.find(o => o.id === obj.logic?.targetId);
+           if (target) {
+              if (obj.logic.action === 'toggle' || obj.logic.action === 'activate') {
+                 if (target.type === 'gate') {
+                    if (target.config) (target.config as any).isOpen = obj.logic.state;
+                 } else if (target.movement) {
+                    target.movement.isActive = obj.logic.state;
+                 }
+              }
+           }
         }
 
         if (obj.behavior === 'physics') {
@@ -1045,22 +1192,104 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
           player.y + pConfig.hitboxSize > oT &&
           player.y - pConfig.hitboxSize < oB
         ) {
+          // Triggers
+          if (obj.type === 'button') {
+             if (!obj.logic?.state) {
+                obj.logic = { ...obj.logic!, state: true };
+                shakeRef.current += 5;
+                if (obj.config?.resetTime > 0) {
+                   setTimeout(() => { if(obj.logic) obj.logic.state = false; }, obj.config.resetTime);
+                }
+             }
+          }
+
+          if (obj.type === 'gravity_zone') {
+             player.vy -= pConfig.gravity * (1 - (obj.config?.gravityMultiplier || 0.5));
+          }
+
+          if (obj.type === 'bounce_pad') {
+             if (player.vy > 0 && player.y < obj.y) {
+                player.vy = -(obj.config?.force || 20);
+                shakeRef.current += 10;
+                feedbacksRef.current.push({ x: obj.x, y: obj.y - 20, text: "BOING!", color: "#4ade80", size: 25, alpha: 1, vy: -2, id: Math.random() });
+             }
+          }
+
+          if (obj.type === 'breakable_platform') {
+             setTimeout(() => {
+                obj.isDestroyed = true;
+                socket?.emit("object:destroy", { roomId, objectId: obj.id });
+             }, 500);
+          }
+
+          // Solid Check
+          const isSolid = obj.type === 'platform' || obj.type === 'elevator' || (obj.type === 'gate' && !obj.config?.isOpen);
+          if (isSolid && !obj.isDestroyed) {
+             if (player.vy > 0 && player.y < obj.y - obj.height/4) {
+               player.y = obj.y - obj.height/2 - pConfig.hitboxSize;
+               player.vy = 0;
+               player.jumpsAvailable = (ballConfig.extraJumps || 0) + 1;
+             }
+          }
+
+          if (obj.behavior === 'destroyable' && !obj.isDestroyed) {
+             const impactForce = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+             if (impactForce > 8) {
+                // Break it!
+                obj.isDestroyed = true;
+                if (socket) socket.emit("object:destroy", { roomId, objectId: obj.id });
+                shakeRef.current += 15;
+                // Shard particles
+                const shardColor = obj.config?.color || "#fff";
+                for(let i=0; i<40; i++) {
+                   particlesRef.current.push({
+                      x: obj.x + (Math.random()-0.5)*obj.width,
+                      y: obj.y + (Math.random()-0.5)*obj.height,
+                      vx: (Math.random()-0.5)*25 - player.vx * 0.2, 
+                      vy: (Math.random()-0.5)*25 - player.vy * 0.2,
+                      color: shardColor, life: 1.0, size: Math.random()*6+2
+                   });
+                }
+                const breakText = obj.config?.type === 'car' ? "KABOOM!" : (obj.config?.type === 'glass_table' ? "SHATTER!" : "DESTROYED!");
+                feedbacksRef.current.push({
+                   x: obj.x, y: obj.y - 40, text: breakText, color: shardColor, size: 35, alpha: 1, vy: -2, id: Math.random()
+                });
+             }
+          }
+
           if (obj.type === 'spike_trap') {
-            // Spike Trap logic: Reset player
-            // Create mini explosion visual
-            for(let i=0; i<10; i++) {
+            // Leak logic
+            for(let i=0; i<15; i++) {
               particlesRef.current.push({
                 x: player.x, y: player.y,
-                vx: (Math.random()-0.5)*10, vy: (Math.random()-0.5)*10,
-                color: "#ff0000", life: 0.5, size: 4
+                vx: (Math.random()-0.5)*12, vy: (Math.random()-0.5)*12,
+                color: "#ff3333", life: 0.6, size: 5
               });
             }
-            player.x = roomConfigRef.current?.worldWidth ? roomConfigRef.current.worldWidth / 2 : width / 2;
-            player.y = roomConfigRef.current?.worldHeight ? roomConfigRef.current.worldHeight / 2 : height / 2;
-            player.vx = 0; player.vy = 0;
-            feedbacksRef.current.push({
-               x: player.x, y: player.y - 40, text: "POP!", color: "#ff4444", size: 20, alpha: 1, vy: -1, id: Math.random()
-            });
+            
+            if (roomConfigRef.current?.enableEvolution) {
+              player.airXp -= 50;
+              player.isLeaking = true;
+              feedbacksRef.current.push({
+                x: player.x, y: player.y - 40, text: "LEAK!", color: "#ff4444", size: 20, alpha: 1, vy: -1, id: Math.random()
+              });
+            } else {
+              player.x = roomConfigRef.current?.worldWidth ? roomConfigRef.current.worldWidth / 2 : width / 2;
+              player.y = roomConfigRef.current?.worldHeight ? roomConfigRef.current.worldHeight / 2 : height / 2;
+              player.vx = 0; player.vy = 0;
+              feedbacksRef.current.push({
+                x: player.x, y: player.y - 40, text: "POP!", color: "#ff4444", size: 20, alpha: 1, vy: -1, id: Math.random()
+              });
+            }
+          } else if (obj.type === 'tape') {
+             if (player.isLeaking) {
+                player.isLeaking = false;
+                if (player.airXp < 0) player.airXp = 0;
+                obj.isDestroyed = true;
+                feedbacksRef.current.push({
+                   x: obj.x, y: obj.y - 40, text: "REPAIRED!", color: "#4ade80", size: 24, alpha: 1, vy: -2, id: Math.random()
+                });
+             }
           } else if (obj.type === 'ramp') {
             // Ramp Logic: Boost
             if (player.vy > 0) { // On descent
@@ -1073,11 +1302,16 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             obj.velocity = obj.velocity || { x: 0, y: 0 };
             const dx = player.x - obj.x;
             const dy = player.y - obj.y;
+            const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+            const nx = dx/dist;
+            const ny = dy/dist;
+
             const impactForce = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+            const kbForce = (ballConfig.knockbackForce || 5) * 0.1;
             
-            obj.velocity.x += -dx * 0.1 * impactForce;
-            obj.velocity.y += -dy * 0.1 * impactForce;
-            obj.angularVelocity = (obj.angularVelocity || 0) + (Math.random() - 0.5) * impactForce;
+            obj.velocity.x += -nx * kbForce * impactForce;
+            obj.velocity.y += -ny * kbForce * impactForce;
+            obj.angularVelocity = (obj.angularVelocity || 0) + (Math.random() - 0.5) * impactForce * kbForce;
             
             shakeRef.current += impactForce * 0.2;
             
@@ -1087,8 +1321,53 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             if (player.vy >= 0 && player.lastY <= oT + 10) {
                  player.y = oT - pConfig.hitboxSize;
                  player.vy = -player.vy * 0.2; // Small bounce
-                 player.jumpsAvailable = pConfig.extraJumps + 1;
-            }
+                  player.jumpsAvailable = (ballConfig.extraJumps || 0) + 1;
+             }
+          }
+        } else if (obj.type === 'fixed_hoop') {
+          // Fixed hoop logic (like end-zone baskets)
+          const hoopX = obj.x;
+          const hoopY = obj.y - obj.height * 0.4; // roughly top part
+          const dx = player.x - hoopX;
+          const dy = player.y - hoopY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          
+          if (dist < 60 && player.vy > 1 && !obj.scored) {
+             obj.scored = true;
+             scoreRef.current += obj.config?.scoreValue || 5;
+             basketsRef.current += 1;
+             if (socket) socket.emit("score:update", { 
+               score: scoreRef.current, 
+               baskets: basketsRef.current,
+               level: playerPosRef.current.level,
+               airXp: playerPosRef.current.airXp
+             });
+             
+             feedbacksRef.current.push({
+                x: hoopX, y: hoopY - 50, text: "FIXED DUNK!", color: "#4ade80", size: 30, alpha: 1, vy: -2, id: Math.random()
+             });
+             
+             // Temporary "scored" state for the fixed hoop visual
+             setTimeout(() => { obj.scored = false; }, 2000);
+             
+             // Satisfactory splash
+             for(let i=0; i<20; i++) {
+                particlesRef.current.push({
+                   x: hoopX, y: hoopY, vx: (Math.random()-0.5)*15, vy: (Math.random()-0.5)*15,
+                   color: "#4ade80", life: 1.0, size: 4
+                });
+             }
+             playSwishSound();
+          }
+          
+          // Collision with backboard or column
+          if (Math.abs(dx) < 100 && Math.abs(dy) < 150) {
+             // Simple bounce
+             if (Math.abs(dx) > 80) player.vx *= -0.5;
+             if (player.vy > 0 && Math.abs(dy) < 150) {
+                player.y = hoopY - 30;
+                player.vy = -player.vy * 0.4;
+             }
           }
         }
       });
@@ -1099,7 +1378,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
         z: player.z, 
         hp: player.hp, 
         airLevel: player.airLevel, 
-        energy: player.energy 
+        energy: player.energy,
+        level: player.level,
+        airXp: player.airXp
       });
 
       // --- PLAYER TO PLAYER COLLISION & COMBAT ---
@@ -1122,16 +1403,34 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
            const impactForce = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
            
            if (impactForce > 5) {
-              // Damage logic
-              const damage = impactForce * 0.5 * (ballConfig.knockbackForce || 5) / 5;
+              // Damage logic (Higher level reduces incoming damage slightly? Or increases dealt damage)
+              const otherLevel = (other as any).level || 1;
+              const myLevel = player.level || 1;
+              
+              // Damage dealt = base * (attacker level modifier) / (defender level modifier)
+              const attackerDamage = (other.ballConfig?.damage || 5);
+              const baseDamage = impactForce * 0.5 * attackerDamage / 5;
+              const damage = baseDamage * (1 + (otherLevel - 1) * 0.1) / (1 + (myLevel - 1) * 0.05);
+              
               player.hp = Math.max(0, player.hp - damage);
+              player.lastAttackerId = other.id;
+              if (player.hp <= 0 && gameStatus === 'playing') {
+                socket.emit("player:kill", { victimId: myId, attackerId: other.id });
+                setGameStatus('eliminated');
+              }
+              
               player.airLevel = Math.max(0.3, player.airLevel - impactForce * 0.001);
+              
+              if (roomConfigRef.current?.enableEvolution) {
+                player.airXp -= damage; // Lose XP when hit
+              }
               
               shakeRef.current += impactForce * 0.5;
               
-              // Knockback
-              player.vx += nx * (other.ballConfig?.knockbackForce || 5) * 0.5;
-              player.vy += ny * (other.ballConfig?.knockbackForce || 5) * 0.5;
+              // Knockback modifier also based on levels
+              const knockbackMult = (1 + (otherLevel - 1) * 0.1);
+              player.vx += nx * (other.ballConfig?.knockbackForce || 5) * 0.5 * knockbackMult;
+              player.vy += ny * (other.ballConfig?.knockbackForce || 5) * 0.5 * knockbackMult;
               
               feedbacksRef.current.push({
                 x: player.x, y: player.y - 20, 
@@ -1165,6 +1464,55 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
          player.energy = Math.min(player.maxEnergy, player.energy + 0.1);
       }
 
+      // --- Evolution & Leakage Logic ---
+      if (roomConfigRef.current?.enableEvolution) {
+        // Experience / Progression based on airXp
+        const currentLevel = player.level || 1;
+        const targetLevel = Math.floor(Math.max(0, player.airXp) / 100) + 1;
+        
+        if (targetLevel > currentLevel) {
+          player.level = targetLevel;
+          // Stats Scaling
+          player.maxHp = (ballConfig.maxHp || 100) * (1 + (player.level - 1) * 0.2);
+          player.maxEnergy = (ballConfig.maxEnergy || 100) * (1 + (player.level - 1) * 0.1);
+          // Scale Effect
+          feedbacksRef.current.push({
+            x: player.x, y: player.y - 60, text: `LEVEL UP! (${player.level})`, color: "#4ade80", size: 24, alpha: 1, vy: -2, id: Math.random()
+          });
+        }
+        
+        // Leakage
+        if (player.airXp < 0) {
+          player.isLeaking = true;
+        }
+        
+        if (player.isLeaking) {
+          player.airXp -= 0.1; // Slow decline
+          player.airLevel = Math.max(0.1, player.airLevel - 0.001);
+          
+          // Leak Animation (Visual)
+          if (now % 5 === 0) {
+            particlesRef.current.push({
+              x: player.x + Math.cos(player.rotation) * pConfig.hitboxSize,
+              y: player.y + Math.sin(player.rotation) * pConfig.hitboxSize,
+              vx: Math.cos(player.rotation) * 5 + (Math.random()-0.5)*2,
+              vy: Math.sin(player.rotation) * 5 + (Math.random()-0.5)*2,
+              size: Math.random() * 5 + 3,
+              color: "rgba(255, 255, 255, 0.4)",
+              life: 0.6
+            });
+          }
+          
+          if (player.airXp > 0) {
+            player.isLeaking = false;
+          }
+        } else {
+           if (player.airLevel < 1.0) {
+              player.airLevel = Math.min(1.0, player.airLevel + 0.0005);
+           }
+        }
+      }
+
       hoopsRef.current = hoopsRef.current.filter(hoop => {
          const elapsed = (now - hoop.spawnTime) / 1000;
         let fallSpeed = hoop.speed;
@@ -1195,8 +1543,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
           hoop.y += Math.cos(elapsed * 3) * 2;
         }
 
+        const wWidth = roomConfigRef.current?.worldWidth || width;
         if (hoop.x < 50) hoop.x = 50;
-        if (hoop.x > width - 50) hoop.x = width - 50;
+        if (hoop.x > wWidth - 50) hoop.x = wWidth - 50;
         // Hoop Vibration Decay
         hoop.vibrationOffset *= hoop.vibrationDecay;
         hoop.currentTilt *= 0.95;
@@ -1239,7 +1588,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
                         player.lastOnBackboardHoopId = hoop.id;
                         player.backboardJumpCount = 0;
                     }
-                    player.jumpsAvailable = pConfig.extraJumps + 1; // RESET JUMPS
+                    player.jumpsAvailable = (ballConfig.extraJumps || 0) + 1; // RESET JUMPS
                     
                     // Aim Assist: Nudge towards center of backboard top for stability
                     if (pConfig.aimAssistEnabled) {
@@ -1294,7 +1643,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
              // Score Rim Hit
              if (hConfig.scoreRimHit !== 0) {
                 scoreRef.current += hConfig.scoreRimHit;
-                socket.emit("score:update", { score: scoreRef.current, baskets: basketsRef.current });
+                socket.emit("score:update", { 
+                  score: scoreRef.current, 
+                  baskets: basketsRef.current,
+                  level: playerPosRef.current.level,
+                  airXp: playerPosRef.current.airXp
+                });
              }
 
              if (pConfig.rimRollEnabled && player.vy > 0 && Math.random() < 0.4 && player.rimRollHoopId === null) {
@@ -1348,7 +1702,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             player.y = platY - pConfig.hitboxSize;
             player.vy = -player.vy * plat.bounciness;
             player.vx *= plat.friction;
-            player.jumpsAvailable = pConfig.extraJumps + 1;
+            player.jumpsAvailable = (ballConfig.extraJumps || 0) + 1;
           }
         }
 
@@ -1365,7 +1719,12 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
                 // Illegal Entry / Penalty
                 hoop.scored = true;
                 scoreRef.current += hConfig.scoreEnterBottom;
-                socket.emit("score:update", { score: scoreRef.current, baskets: basketsRef.current });
+                socket.emit("score:update", { 
+                  score: scoreRef.current, 
+                  baskets: basketsRef.current,
+                  level: playerPosRef.current.level,
+                  airXp: playerPosRef.current.airXp
+                });
                 feedbacksRef.current.push({
                    x: hoop.x, y: hoop.y - 30, text: "ILLEGAL ENTRY!", color: "#ef4444", size: 15, alpha: 1, vy: -1, id: Math.random()
                 });
@@ -1426,6 +1785,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
 
             scoreRef.current += addedScore;
             basketsRef.current += 1;
+            
+            if (roomConfigRef.current?.enableEvolution) {
+              player.airXp += addedScore * 2;
+            }
+            
             socket.emit("score:update", { score: scoreRef.current, baskets: basketsRef.current });
 
             // Behavior effects
@@ -1496,17 +1860,183 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             vy: player.vy
         });
 
-        return hoop.y < height + 200;
+        return hoop.y < (roomConfigRef.current?.worldHeight || height) + 200;
       });
 
       ctx.clearRect(0, 0, width, height);
 
       // 1. Draw Background (Static or centered on viewport)
-      const skyGrad = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height));
-      skyGrad.addColorStop(0, "#0f172a");
-      skyGrad.addColorStop(1, "#05050a");
-      ctx.fillStyle = skyGrad;
-      ctx.fillRect(0, 0, width, height);
+      const bgType = roomConfigRef.current?.backgroundType || 'space';
+      
+      if (bgType === 'street') {
+          // Sunset street vibe
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, "#4a1d1d"); // Deep red/brown
+          grad.addColorStop(0.5, "#d97706"); // Amber
+          grad.addColorStop(1, "#1e1b4b"); // Dark blue
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, width, height);
+          
+          // Silhouettes of buildings
+          ctx.fillStyle = "rgba(0,0,0,0.5)";
+          const worldScrollX = cameraRef.current.x * 0.2;
+          for(let i=0; i<10; i++) {
+             ctx.fillRect((i*400) - (worldScrollX % 400), height - 400 - (i*20 % 50), 200, 400);
+          }
+      } else if (bgType === 'park') {
+          // Day park vibe
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, "#0ea5e9"); // Sky blue
+          grad.addColorStop(1, "#93c5fd"); // Light blue
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, width, height);
+          
+          // Hills
+          ctx.fillStyle = "#166534";
+          const hillScrollX = cameraRef.current.x * 0.1;
+          for(let i=0; i<5; i++) {
+             ctx.beginPath();
+             ctx.arc((i*800) - (hillScrollX % 800), height, 600, Math.PI, 0);
+             ctx.fill();
+          }
+      } else if (bgType === 'stadium_day' || bgType === 'stadium_night') {
+          const isNight = bgType === 'stadium_night';
+          ctx.fillStyle = isNight ? "#020617" : "#334155";
+          ctx.fillRect(0, 0, width, height);
+          
+          // Grandstands (Arquibancadas)
+          const scrollX = cameraRef.current.x * 0.3;
+          ctx.fillStyle = isNight ? "#1e293b" : "#475569";
+          for(let row=0; row<5; row++) {
+             const rowY = height - 100 - row * 40;
+             ctx.fillRect(0, rowY, width, 20);
+             
+             // Crowds (Simple colored dots)
+             if (row > 1) {
+                for(let i=0; i<width; i+=20) {
+                   const crowdX = (i - (scrollX % 20));
+                   ctx.fillStyle = `hsl(${Math.random() * 360}, 50%, 50%)`;
+                   ctx.beginPath();
+                   ctx.arc(crowdX, rowY - 10, 4, 0, Math.PI * 2);
+                   ctx.fill();
+                }
+                ctx.fillStyle = isNight ? "#1e293b" : "#475569";
+             }
+          }
+          
+          if (isNight) {
+            // Lens flare / Stadium lights
+            ctx.shadowBlur = 40;
+            ctx.shadowColor = "white";
+            ctx.fillStyle = "white";
+            ctx.beginPath();
+            ctx.arc(100, 100, 10, 0, Math.PI * 2);
+            ctx.arc(width - 100, 100, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.shadowBlur = 0;
+          }
+      } else if (bgType === 'gym') {
+          // Indoor Gym Vibe
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, "#4a2c1d"); // Ceiling
+          grad.addColorStop(0.5, "#d97706"); // Bright center
+          grad.addColorStop(1, "#3c1800"); // Floor shadow
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, width, height);
+          
+          // Draw simple rafters/lights
+          ctx.fillStyle = "rgba(0,0,0,0.3)";
+          for(let i=0; i<width; i+=400) {
+             ctx.fillRect(i - (cameraRef.current.x * 0.1 % 400), 0, 20, 200);
+          }
+      } else if (bgType === 'urban') {
+          // City Skyline
+          const grad = ctx.createLinearGradient(0, 0, 0, height);
+          grad.addColorStop(0, "#1e1b4b");
+          grad.addColorStop(1, "#312e81");
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, width, height);
+          
+          ctx.fillStyle = "#020617";
+          const scrollX = cameraRef.current.x * 0.15;
+          for(let i=0; i<10; i++) {
+             const bX = (i*300) - (scrollX % 300);
+             const bH = 300 + (Math.sin(i) * 100);
+             ctx.fillRect(bX, height - bH, 150, bH);
+             // Windows
+             ctx.fillStyle = "#eab308";
+             for(let w=0; w<5; w++) {
+                ctx.fillRect(bX + 20, height - bH + 50 + (w*40), 10, 10);
+                ctx.fillRect(bX + 120, height - bH + 50 + (w*40), 10, 10);
+             }
+             ctx.fillStyle = "#020617";
+          }
+      } else {
+          const skyGrad = ctx.createRadialGradient(width / 2, height / 2, 0, width / 2, height / 2, Math.max(width, height));
+          skyGrad.addColorStop(0, "#0f172a");
+          skyGrad.addColorStop(1, "#05050a");
+          ctx.fillStyle = skyGrad;
+          ctx.fillRect(0, 0, width, height);
+      }
+
+      // 3. Draw Room Structure (Walls, Ceiling, Floor)
+      const worldToScreen = (x: number, y: number) => {
+        return {
+          x: (x - cameraRef.current.x) * cameraRef.current.zoom + width / 2,
+          y: (y - cameraRef.current.y) * cameraRef.current.zoom + height / 2
+        };
+      };
+
+      const wallW = rConf?.wallWidth || 100;
+      const ceilH = rConf?.ceilingHeight || 200;
+      const arenaColor = rConf?.floorColor || "#1e1b4b";
+
+      if (rConf?.hasWall) {
+        ctx.fillStyle = "rgba(0,0,0,0.8)";
+        // Left Wall
+        const lWallPos = worldToScreen(wallW / 2, hConfig.worldHeight / 2);
+        ctx.fillRect(lWallPos.x - (wallW / 2) * cameraRef.current.zoom, lWallPos.y - (hConfig.worldHeight / 2) * cameraRef.current.zoom, wallW * cameraRef.current.zoom, hConfig.worldHeight * cameraRef.current.zoom);
+        
+        // Right Wall
+        const rWallPos = worldToScreen(hConfig.worldWidth - wallW / 2, hConfig.worldHeight / 2);
+        ctx.fillRect(rWallPos.x - (wallW / 2) * cameraRef.current.zoom, rWallPos.y - (hConfig.worldHeight / 2) * cameraRef.current.zoom, wallW * cameraRef.current.zoom, hConfig.worldHeight * cameraRef.current.zoom);
+      }
+
+      if (rConf?.hasCeiling) {
+        ctx.fillStyle = "rgba(0,0,0,0.9)";
+        const ceilPos = worldToScreen(hConfig.worldWidth / 2, ceilH / 2);
+        ctx.fillRect(ceilPos.x - (hConfig.worldWidth / 2) * cameraRef.current.zoom, ceilPos.y - (ceilH / 2) * cameraRef.current.zoom, hConfig.worldWidth * cameraRef.current.zoom, ceilH * cameraRef.current.zoom);
+      }
+
+      // Windows (Visual only, collision is handled in update)
+      if (rConf?.windows) {
+        rConf.windows.forEach(w => {
+           const wPos = worldToScreen(w.x, w.y);
+           // Draw "sky" or outside view in the window
+           ctx.fillStyle = "rgba(100, 200, 255, 0.3)";
+           ctx.fillRect(wPos.x - (w.width/2) * cameraRef.current.zoom, wPos.y - (w.height/2) * cameraRef.current.zoom, w.width * cameraRef.current.zoom, w.height * cameraRef.current.zoom);
+           
+           // Frame
+           ctx.strokeStyle = "rgba(255,255,255,0.5)";
+           ctx.lineWidth = 4 * cameraRef.current.zoom;
+           ctx.strokeRect(wPos.x - (w.width/2) * cameraRef.current.zoom, wPos.y - (w.height/2) * cameraRef.current.zoom, w.width * cameraRef.current.zoom, w.height * cameraRef.current.zoom);
+        });
+      }
+
+      // Draw Floor
+      const floorPos = worldToScreen(hConfig.worldWidth / 2, hConfig.worldHeight);
+      ctx.fillStyle = arenaColor;
+      ctx.fillRect(floorPos.x - (hConfig.worldWidth / 2) * cameraRef.current.zoom, floorPos.y, hConfig.worldWidth * cameraRef.current.zoom, 100 * cameraRef.current.zoom);
+
+      // Add Floor Lines
+      ctx.strokeStyle = "rgba(255,255,255,0.2)";
+      ctx.lineWidth = 4 * cameraRef.current.zoom;
+      ctx.beginPath();
+      const threePointRad = 1000 * cameraRef.current.zoom;
+      ctx.arc(floorPos.x, floorPos.y, threePointRad, Math.PI, 0);
+      ctx.stroke();
+      
+      ctx.strokeRect(floorPos.x - 200 * cameraRef.current.zoom, floorPos.y - 600 * cameraRef.current.zoom, 400 * cameraRef.current.zoom, 600 * cameraRef.current.zoom);
 
       ctx.save();
       // Apply Camera
@@ -1528,11 +2058,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
           }
       }
 
-      // Draw Basketball Court Floor
+      // Draw Basketball Basketball Court Floor
       const groundLevel = hConfig.worldHeight - 50;
       ctx.save();
-      // Wood Texture Base (Vibrant basketball court amber)
-      ctx.fillStyle = "#f59e0b"; // amber-500
+      // Floor Color based on roomConfig
+      ctx.fillStyle = roomConfigRef.current?.floorColor || "#f59e0b"; 
       ctx.fillRect(0, groundLevel, hConfig.worldWidth, 1000);
       
       // Detailed Wood Grain Pattern
@@ -1745,6 +2275,57 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             ctx.lineTo(-obj.width/2 + (i+1)*spikeW, obj.height/2);
             ctx.fill();
           }
+        } else if (obj.type === 'gravity_zone') {
+          const c = obj.config?.color || "rgba(79, 70, 229, 0.1)";
+          ctx.fillStyle = c;
+          ctx.fillRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+          ctx.strokeStyle = "rgba(255,255,255,0.2)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+          // Drawing some floating particles in zone
+          ctx.fillStyle = "rgba(255,255,255,0.1)";
+          for(let i=0; i<5; i++) {
+            const px = Math.sin(now * 0.001 + i) * obj.width/3;
+            const py = Math.cos(now * 0.0013 + i) * obj.height/3;
+            ctx.beginPath();
+            ctx.arc(px, py, 2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else if (obj.type === 'bounce_pad') {
+          ctx.fillStyle = obj.config.color;
+          ctx.beginPath();
+          ctx.roundRect(-obj.width/2, -obj.height/2, obj.width, obj.height, 5);
+          ctx.fill();
+          ctx.fillStyle = "rgba(255,255,255,0.4)";
+          const anim = Math.abs(Math.sin(now * 0.01)) * 10;
+          ctx.fillRect(-obj.width/2 + 10, -obj.height/2 + 5 + anim, obj.width - 20, 5);
+        } else if (obj.type === 'button') {
+          const isPressed = obj.logic?.state;
+          ctx.fillStyle = isPressed ? obj.config.pressedColor : obj.config.unpressedColor;
+          ctx.beginPath();
+          ctx.roundRect(-obj.width/2, isPressed ? 0 : -obj.height, obj.width, obj.height, 5);
+          ctx.fill();
+          ctx.fillStyle = "#333";
+          ctx.fillRect(-obj.width/2 - 10, 0, obj.width + 20, 10);
+        } else if (obj.type === 'gate') {
+          const isOpen = obj.config?.isOpen;
+          ctx.fillStyle = obj.config.color;
+          ctx.globalAlpha = isOpen ? 0.2 : 0.8;
+          ctx.fillRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+          ctx.strokeStyle = "white";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+          ctx.globalAlpha = 1.0;
+        } else if (obj.type === 'tape') {
+          // Draw Tape (Cross Shape)
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(-obj.width/2, -5, obj.width, 10);
+          ctx.fillRect(-5, -obj.height/2, 10, obj.height);
+          // Glow
+          ctx.shadowBlur = 15;
+          ctx.shadowColor = "#fff";
+          ctx.strokeRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+          ctx.shadowBlur = 0;
         } else if (obj.type === 'ramp') {
           // Draw Triangle Ramp
           ctx.beginPath();
@@ -1796,6 +2377,96 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             ctx.arc(0, -obj.height/4, 20, 0, Math.PI * 2);
             ctx.arc(0, obj.height/4, 20, 0, Math.PI * 2);
             ctx.stroke();
+          } else if (type === 'glass_table') {
+            // Glass Table
+            ctx.fillStyle = "rgba(147, 197, 253, 0.3)"; // blue-300 transparent
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+            ctx.lineWidth = 2;
+            ctx.fillRect(-obj.width/2, -10, obj.width, 20);
+            ctx.strokeRect(-obj.width/2, -10, obj.width, 20);
+            // Legs
+            ctx.fillStyle = "#94a3b8"; // slate-400
+            ctx.fillRect(-obj.width/2 + 20, 10, 10, obj.height - 10);
+            ctx.fillRect(obj.width/2 - 30, 10, 10, obj.height - 10);
+            // Reflection
+            ctx.fillStyle = "rgba(255,255,255,0.2)";
+            ctx.beginPath();
+            ctx.moveTo(-obj.width/4, -10);
+            ctx.lineTo(0, -10);
+            ctx.lineTo(-obj.width/8, 10);
+            ctx.lineTo(-obj.width/4 - obj.width/8, 10);
+            ctx.fill();
+          } else if (type === 'car') {
+            // Car Body
+            ctx.fillStyle = obj.config.color;
+            ctx.beginPath();
+            ctx.roundRect(-obj.width/2, -10, obj.width, 30, 10);
+            ctx.fill();
+            // Cabin
+            ctx.fillStyle = "rgba(255,255,255,0.4)";
+            ctx.beginPath();
+            ctx.roundRect(-obj.width/4, -30, obj.width/2, 25, 5);
+            ctx.fill();
+            // Wheels
+            ctx.fillStyle = "#111";
+            ctx.beginPath();
+            ctx.arc(-obj.width/3, 20, 12, 0, Math.PI * 2);
+            ctx.arc(obj.width/3, 20, 12, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (type === 'pole') {
+            // Vertical Pole
+            ctx.fillStyle = "#475569";
+            ctx.fillRect(-10, -obj.height/2, 20, obj.height);
+            // Light head
+            ctx.fillStyle = "#eab308";
+            ctx.beginPath();
+            ctx.arc(0, -obj.height/2, 25, 0, Math.PI * 2);
+            ctx.fill();
+            if (!obj.isDestroyed) {
+              ctx.shadowBlur = 40;
+              ctx.shadowColor = "#eab308";
+              ctx.fillStyle = "white";
+              ctx.beginPath();
+              ctx.arc(0, -obj.height/2, 10, 0, Math.PI * 2);
+              ctx.fill();
+              ctx.shadowBlur = 0;
+            }
+          } else if (type === 'crate') {
+            // Wooden Crate
+            ctx.fillStyle = "#92400e";
+            ctx.fillRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
+            ctx.strokeStyle = "#451a03";
+            ctx.lineWidth = 4;
+            ctx.strokeRect(-obj.width/2 + 5, -obj.height/2 + 5, obj.width - 10, obj.height - 10);
+            ctx.beginPath();
+            ctx.moveTo(-obj.width/2 + 5, -obj.height/2 + 5);
+            ctx.lineTo(obj.width/2 - 5, obj.height/2 - 5);
+            ctx.stroke();
+          } else if (type === 'barrel') {
+            // Steel Barrel
+            ctx.fillStyle = obj.config.color || "#ef4444";
+            ctx.beginPath();
+            ctx.roundRect(-obj.width/2, -obj.height/2, obj.width, obj.height, 5);
+            ctx.fill();
+            // Rings
+            ctx.strokeStyle = "rgba(0,0,0,0.3)";
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.moveTo(-obj.width/2, -obj.height/4);
+            ctx.lineTo(obj.width/2, -obj.height/4);
+            ctx.moveTo(-obj.width/2, obj.height/4);
+            ctx.lineTo(obj.width/2, obj.height/4);
+            ctx.stroke();
+          } else if (type === 'statue') {
+            // Greek/Abstract Statue
+            ctx.fillStyle = "#e2e8f0";
+            ctx.beginPath();
+            ctx.rect(-obj.width/4, obj.height/4, obj.width/2, obj.height/4); // Pedestal
+            ctx.roundRect(-obj.width/3, -obj.height/4, obj.width/1.5, obj.height/2, 10); // Body
+            ctx.arc(0, -obj.height/2.5, 20, 0, Math.PI * 2); // Head
+            ctx.fill();
+            ctx.strokeStyle = "#94a3b8";
+            ctx.stroke();
           } else if (type === 'cone') {
             ctx.fillStyle = obj.config.color;
             ctx.beginPath();
@@ -1807,6 +2478,42 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
             ctx.fillRect(-obj.width/2 - 5, obj.height/2 - 5, obj.width+10, 5);
           }
           ctx.restore();
+        } else if (obj.type === 'fixed_hoop') {
+          // Draw Fixed Hoop
+          const color = obj.config?.color || "white";
+          const scored = (obj as any).scored;
+          
+          ctx.strokeStyle = scored ? "#4ade80" : color;
+          ctx.lineWidth = 10;
+          // Column
+          if (obj.config?.hasColumn) {
+             ctx.beginPath();
+             ctx.moveTo(0, obj.height/2);
+             ctx.lineTo(0, -obj.height*0.3);
+             ctx.stroke();
+          }
+          // Backboard
+          if (obj.config?.hasBackboard) {
+             ctx.fillStyle = "rgba(255,255,255,0.1)";
+             ctx.fillRect(-60, -obj.height*0.6, 120, 100);
+             ctx.strokeRect(-60, -obj.height*0.6, 120, 100);
+             ctx.strokeRect(-30, -obj.height*0.5, 60, 50);
+          }
+          // Rim
+          ctx.beginPath();
+          ctx.ellipse(0, -obj.height*0.35, 60, 20, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          
+          // Net
+          ctx.strokeStyle = "rgba(255,255,255,0.4)";
+          ctx.lineWidth = 2;
+          for(let i=0; i<8; i++) {
+             const angle = (i / 8) * Math.PI * 2;
+             ctx.beginPath();
+             ctx.moveTo(Math.cos(angle)*60, -obj.height*0.35);
+             ctx.lineTo(Math.cos(angle)*40, -obj.height*0.35 + 40);
+             ctx.stroke();
+          }
         } else {
           // Box platforms / Elevators
           ctx.fillRect(-obj.width/2, -obj.height/2, obj.width, obj.height);
@@ -1877,8 +2584,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
         const otherMaxHp = (p as any).maxHp || 100;
 
         if (p.ballConfig) {
-          drawBall(ctx, p.x, p.y, pConfig.hitboxSize * zScale, player.rotation, p.ballConfig.scale * zScale, { ...p.ballConfig, airLevel: otherAir });
-          drawStats(ctx, p.x, p.y, otherHp, otherMaxHp, otherAir);
+          const otherLevel = (p as any).level || 1;
+          const otherEvoScale = 1 + (otherLevel - 1) * 0.2;
+          drawBall(ctx, p.x, p.y, pConfig.hitboxSize * zScale * otherEvoScale, player.rotation, p.ballConfig.scale * zScale * otherEvoScale, { ...p.ballConfig, airLevel: otherAir });
+          const otherAirXp = (p as any).airXp || 0;
+          drawStats(ctx, p.x, p.y, otherHp, otherMaxHp, otherAir, otherLevel, otherAirXp);
         } else {
           ctx.save();
           ctx.beginPath();
@@ -1897,8 +2607,9 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
       // Local Player
       ctx.save();
       const zScaleLocal = 1 + (player.z) * 0.005;
-      drawBall(ctx, player.x, player.y, pConfig.hitboxSize * zScaleLocal, player.rotation, ballConfig.scale * zScaleLocal, { ...ballConfig, airLevel: player.airLevel });
-      drawStats(ctx, player.x, player.y, player.hp, player.maxHp, player.airLevel);
+      const evoScale = 1 + ((player.level || 1) - 1) * 0.2;
+      drawBall(ctx, player.x, player.y, pConfig.hitboxSize * zScaleLocal * evoScale, player.rotation, ballConfig.scale * zScaleLocal * evoScale, { ...ballConfig, airLevel: player.airLevel });
+      drawStats(ctx, player.x, player.y, player.hp, player.maxHp, player.airLevel, player.level, player.airXp);
       ctx.restore();
 
       // PHASE 3: Draw Front Layer of Hoops (Net and Front Rim)
@@ -2028,10 +2739,11 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
       });
       ctx.restore();
 
-      // Leaderboard
-      ctx.save();
-      
+      // Ranking Overlay and Modal
+      ctx.restore();
+
       // Timer
+      ctx.save();
       ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
       ctx.beginPath();
       ctx.roundRect(width / 2 - 60, 20, 120, 40, 10);
@@ -2040,18 +2752,6 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
       ctx.font = "bold 20px Inter";
       ctx.textAlign = "center";
       ctx.fillText(formatTime(timeRemaining), width / 2, 47);
-
-      const lbX = 40;
-      const lbY = 100;
-      ctx.fillStyle = "white";
-      ctx.font = "bold 12px monospace";
-      ctx.fillText("RANKING", lbX, lbY);
-      
-      const sortedPlayers = (Object.values(players) as Player[]).sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 5);
-      sortedPlayers.forEach((p, i) => {
-          ctx.fillStyle = p.id === myId ? "#4ade80" : "rgba(255,255,255,0.6)";
-          ctx.fillText(`${i+1}. ${p.name?.slice(0, 10)}: ${Math.round(p.score || 0)}`, lbX, lbY + 20 + i * 20);
-      });
       ctx.restore();
 
       animationFrameId = requestAnimationFrame(render);
@@ -2073,11 +2773,13 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
         if (pConfig.gameplayMode !== 'throw') {
           const player = playerPosRef.current;
           const now = Date.now();
-          if (player.jumpsAvailable > 0 && now - player.lastJumpTime > pConfig.jumpCooldown) {
+          const jumpEnergyCost = 15;
+          if (player.jumpsAvailable > 0 && player.energy >= jumpEnergyCost && now - player.lastJumpTime > pConfig.jumpCooldown) {
             if (pConfig.cancelFallOnJump) player.vy = 0;
-            const isFirstJump = player.jumpsAvailable === (pConfig.extraJumps + 1);
+            const isFirstJump = player.jumpsAvailable === ((ballConfig.extraJumps || 0) + 1);
             player.vy += isFirstJump ? pConfig.jumpForce : pConfig.secondJumpForce;
             player.jumpsAvailable--;
+            player.energy -= jumpEnergyCost;
             player.lastJumpTime = now;
             if (player.lastOnBackboardHoopId !== null) {
                 player.backboardJumpCount++;
@@ -2115,12 +2817,14 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
     if (pConfig.gameplayMode === 'jump') {
         const player = playerPosRef.current;
         const now = Date.now();
-        if (player.jumpsAvailable > 0 && now - player.lastJumpTime > pConfig.jumpCooldown) {
+        const jumpEnergyCost = 15;
+        if (player.jumpsAvailable > 0 && player.energy >= jumpEnergyCost && now - player.lastJumpTime > pConfig.jumpCooldown) {
           if (pConfig.cancelFallOnJump) player.vy = 0;
-          const isFirstJump = player.jumpsAvailable === (pConfig.extraJumps + 1);
+          const isFirstJump = player.jumpsAvailable === ((ballConfig.extraJumps || 0) + 1);
           player.vy += isFirstJump ? pConfig.jumpForce : pConfig.secondJumpForce;
           player.vz = (Math.random() - 0.5) * 4; // Add depth variation on jump
           player.jumpsAvailable--;
+          player.energy -= jumpEnergyCost;
           player.lastJumpTime = now;
           if (player.lastOnBackboardHoopId !== null) {
               player.backboardJumpCount++;
@@ -2144,9 +2848,10 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
 
     // Handle Burnout Release
     if (player.isBurnoutCharging) {
-        if (player.burnoutPower > 5) {
+        if (player.burnoutPower > 5 && player.energy >= player.burnoutPower) {
             player.vx = Math.cos(player.burnoutAngle) * player.burnoutPower * 1.5;
             player.vy = Math.sin(player.burnoutAngle) * player.burnoutPower * 1.5;
+            player.energy -= player.burnoutPower;
             
             // Visual Blast
             shakeRef.current += player.burnoutPower;
@@ -2254,7 +2959,23 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ socket, players, myId, p
         className="w-full h-full block"
       />
 
+      {/* Core UI Overlays */}
+      <RankingOverlay 
+        players={players}
+        myId={myId}
+        onPlayerClick={(p) => setSelectedPlayer(p)}
+      />
+
       <AnimatePresence>
+        {selectedPlayer && (
+          <UserProfileModal 
+            player={selectedPlayer}
+            onClose={() => setSelectedPlayer(null)}
+            onLike={(targetId) => {
+                socket.emit("profile:like", { targetId });
+            }}
+          />
+        )}
         {gameStatus === 'gameOver' && (
           <motion.div 
             initial={{ opacity: 0 }}

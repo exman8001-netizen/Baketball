@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { GameCanvas } from "./components/GameCanvas";
-import { Trophy, Users, Zap, LayoutGrid, Sliders, Dribbble, Palette, X } from "lucide-react";
+import { Trophy, Users, Zap, LayoutGrid, Sliders, Dribbble, Palette, X, Settings, User } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { PhysicsConfig, PHYSICS_PRESETS, HoopConfig, DEFAULT_HOOP_CONFIG, BallConfig, DEFAULT_BALL_CONFIG, Player } from "./types";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -10,6 +10,8 @@ import { BallCustomizer } from "./components/BallCustomizer";
 import { BallPreview } from "./components/BallPreview";
 
 import { RoomEditor } from "./components/RoomEditor";
+import { SystemSettings } from "./components/SystemSettings";
+import { ProfileEditor } from "./components/ProfileEditor";
 import { RoomConfig, RoomObject } from "./types";
 
 export default function App() {
@@ -24,6 +26,7 @@ export default function App() {
   // Physics State
   const [physicsConfig, setPhysicsConfig] = useState<PhysicsConfig>(PHYSICS_PRESETS["Arcade Leve"]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSystemSettingsOpen, setIsSystemSettingsOpen] = useState(false);
 
   // Hoop State
   const [hoopConfig, setHoopConfig] = useState<HoopConfig>(DEFAULT_HOOP_CONFIG);
@@ -36,6 +39,12 @@ export default function App() {
   // Room Editor State
   const [currentRoomEdit, setCurrentRoomEdit] = useState<RoomConfig | null>(null);
   const [availableRooms, setAvailableRooms] = useState<RoomConfig[]>([]);
+  const [isProfileEditorOpen, setIsProfileEditorOpen] = useState(false);
+  const [myProfileStats, setMyProfileStats] = useState({
+      bio: "Explorando os céus...",
+      favoriteTeam: "Time Estelar",
+      favoritePlayer: "O Mestre"
+  });
   const [roomConfig, setRoomConfig] = useState<RoomConfig | null>(null);
   const [isGalleryOpen, setIsGalleryOpen] = useState(false);
 
@@ -74,8 +83,40 @@ export default function App() {
     newSocket.on("score:updated", (data) => {
       setPlayers((prev) => ({
         ...prev,
-        [data.id]: { ...prev[data.id], score: data.score },
+        [data.id]: { 
+          ...prev[data.id], 
+          score: data.score, 
+          baskets: data.baskets, 
+          level: data.level, 
+          airXp: data.airXp 
+        },
       } as any));
+    });
+
+    newSocket.on("stats:updated", (data) => {
+      setPlayers((prev) => ({
+        ...prev,
+        [data.id]: { 
+          ...prev[data.id], 
+          kills: data.kills, 
+          deaths: data.deaths 
+        },
+      } as any));
+    });
+
+    newSocket.on("player:profile:updated", (data) => {
+      setPlayers((prev) => ({
+        ...prev,
+        [data.id]: { 
+          ...prev[data.id], 
+          stats: data.stats 
+        },
+      } as any));
+    });
+
+    newSocket.on("feed:kill", (data) => {
+       // Optional: Add a kill feed UI
+       console.log(`${data.attacker} eliminou ${data.victim}`);
     });
 
     newSocket.on("room:list", (rooms) => {
@@ -130,7 +171,8 @@ export default function App() {
       socket.emit("player:setup", {
         name: playerName,
         ballConfig: ballConfig,
-        roomId: currentRoomId
+        roomId: currentRoomId,
+        stats: myProfileStats
       });
       setGameState("playing");
     }
@@ -280,6 +322,20 @@ export default function App() {
                 )}
 
                 <div className="mt-12 flex gap-4 w-full">
+                  <button 
+                    onClick={() => setIsProfileEditorOpen(true)}
+                    className="flex-1 items-center gap-3 text-[10px] text-white/40 uppercase font-black tracking-widest bg-white/5 px-5 py-4 rounded-3xl border border-white/10 flex flex-col justify-center transition-all hover:bg-white/10 hover:text-white"
+                  >
+                    <User className="w-5 h-5 mb-1" />
+                    <span>Config Perfil</span>
+                  </button>
+                  <button 
+                    onClick={() => setIsSystemSettingsOpen(true)}
+                    className="flex-1 items-center gap-3 text-[10px] text-white/40 uppercase font-black tracking-widest bg-white/5 px-5 py-4 rounded-3xl border border-white/10 flex flex-col justify-center transition-all hover:bg-white/10 hover:text-white"
+                  >
+                    <Settings className="w-5 h-5 mb-1" />
+                    <span>Config AI</span>
+                  </button>
                   <div className="flex-1 items-center gap-3 text-[10px] text-indigo-400/80 uppercase font-black tracking-widest bg-indigo-500/10 px-5 py-4 rounded-3xl border border-indigo-500/20 flex flex-col justify-center">
                     <Users className="w-5 h-5 mb-1" />
                     <span>{Object.keys(players).length} Pilots Syncing</span>
@@ -363,6 +419,21 @@ export default function App() {
             initialConfig={ballConfig}
             onSave={handleBallConfigChange}
             onClose={() => setIsBallCustomizerOpen(false)}
+          />
+        )}
+        {isSystemSettingsOpen && (
+          <SystemSettings 
+            onClose={() => setIsSystemSettingsOpen(false)}
+          />
+        )}
+        {isProfileEditorOpen && (
+          <ProfileEditor 
+            initialStats={myProfileStats}
+            onSave={(stats) => {
+                setMyProfileStats(stats);
+                if (socket) socket.emit("profile:update", stats);
+            }}
+            onClose={() => setIsProfileEditorOpen(false)}
           />
         )}
       </AnimatePresence>

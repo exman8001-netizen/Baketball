@@ -16,6 +16,8 @@ import {
 } from "lucide-react";
 import { BallConfig, DEFAULT_BALL_CONFIG, BALL_PRESETS } from "../types";
 import { BallPreview } from "./BallPreview";
+import { generateBallConfigFromAI } from "../services/geminiService";
+import { FAMOUS_PLAYERS, NBA_TEAMS } from "../constants";
 
 interface BallCustomizerProps {
   initialConfig?: BallConfig;
@@ -40,6 +42,9 @@ export const BallCustomizer: React.FC<BallCustomizerProps> = ({
 }) => {
   const [config, setConfig] = useState<BallConfig>(initialConfig);
   const [activeTab, setActiveTab] = useState('style');
+  const [playerName, setPlayerName] = useState("");
+  const [selectedTeam, setSelectedTeam] = useState<{name: string, symbol: string} | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const updateConfig = (updates: Partial<BallConfig>) => {
     const newConfig = { ...config, ...updates };
@@ -70,12 +75,39 @@ export const BallCustomizer: React.FC<BallCustomizerProps> = ({
       maxHp: 200,
       energy: 50 + Math.floor(Math.random() * 150),
       maxEnergy: 200,
+      energyRechargeSpeed: 1 + Math.floor(Math.random() * 9),
+      damage: 1 + Math.floor(Math.random() * 9),
+      extraJumps: Math.floor(Math.random() * 4),
       knockbackForce: 1 + Math.random() * 9,
       weight: 1 + Math.random() * 9,
       bounciness: 1 + Math.random() * 9,
       speed: 1 + Math.random() * 9,
       airLevel: 0.7 + Math.random() * 0.3,
     });
+  };
+
+  const handleAIGeneration = async (name: string) => {
+    if (!name && !playerName) return;
+    setIsGenerating(true);
+    const targetName = name || playerName;
+    try {
+      const aiConfig = await generateBallConfigFromAI(
+        targetName, 
+        selectedTeam?.name, 
+        selectedTeam?.symbol
+      );
+      updateConfig(aiConfig);
+    } catch (error) {
+      console.error("AI Generation failed:", error);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleRandomPlayer = () => {
+    const randomPlayer = FAMOUS_PLAYERS[Math.floor(Math.random() * FAMOUS_PLAYERS.length)];
+    setPlayerName(randomPlayer);
+    handleAIGeneration(randomPlayer);
   };
 
   const renderAttributeBar = (label: string, value: number, max: number, color: string) => {
@@ -97,42 +129,138 @@ export const BallCustomizer: React.FC<BallCustomizerProps> = ({
     );
   };
 
+  const renderAttributeSlider = (label: string, field: keyof BallConfig, min: number, max: number, step: number = 0.1) => {
+    const val = config[field] as number;
+    return (
+      <div className="space-y-2">
+        <div className="flex justify-between text-[9px] font-black uppercase tracking-widest text-white/40">
+          <span>{label}</span>
+          <span className="text-white">{typeof val === 'number' ? val.toFixed(step >= 1 ? 0 : 1) : val}</span>
+        </div>
+        <input 
+          type="range" min={min} max={max} step={step}
+          value={val}
+          onChange={(e) => updateConfig({ [field]: parseFloat(e.target.value) })}
+          className="w-full h-1.5 bg-white/5 rounded-full appearance-none cursor-pointer accent-indigo-500"
+        />
+      </div>
+    );
+  };
+
   const renderContent = () => {
     switch (activeTab) {
       case 'attributes':
         return (
-          <div className="space-y-6 pt-2">
+          <div className="space-y-6 pt-2 pb-10">
             <div className="grid grid-cols-1 gap-6">
-              <div className="space-y-4 bg-white/5 p-6 rounded-[2rem] border border-white/10">
+              <div className="space-y-5 bg-white/5 p-6 rounded-[2rem] border border-white/10">
                 <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-400">Status de Combate</h4>
-                {renderAttributeBar("HP (Integridade)", config.hp, config.maxHp, "bg-emerald-500")}
-                {renderAttributeBar("Energia Cinética", config.energy, config.maxEnergy, "bg-blue-500")}
-                {renderAttributeBar("Pressão de Ar", config.airLevel * 100, 100, "bg-sky-400")}
+                {renderAttributeSlider("HP Máximo", "maxHp", 50, 500, 1)}
+                {renderAttributeSlider("Energia Máxima", "maxEnergy", 50, 500, 1)}
+                {renderAttributeSlider("Dano de Impacto", "damage", 1, 20, 0.5)}
+                {renderAttributeSlider("Recarga de Energia", "energyRechargeSpeed", 1, 20, 0.5)}
+                {renderAttributeSlider("Pulos Extras", "extraJumps", 0, 5, 1)}
               </div>
               
-              <div className="space-y-4 bg-white/5 p-6 rounded-[2rem] border border-white/10">
+              <div className="space-y-5 bg-white/5 p-6 rounded-[2rem] border border-white/10">
                 <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-400">Mecânica Física</h4>
-                {renderAttributeBar("Força de Knockback", config.knockbackForce, 10, "bg-rose-500")}
-                {renderAttributeBar("Peso / Massa", config.weight, 10, "bg-zinc-400")}
-                {renderAttributeBar("Elasticidade", config.bounciness, 10, "bg-amber-400")}
-                {renderAttributeBar("Aceleração Max", config.speed, 10, "bg-indigo-400")}
+                {renderAttributeSlider("Força de Knockback", "knockbackForce", 1, 15, 0.1)}
+                {renderAttributeSlider("Peso / Massa", "weight", 1, 15, 0.1)}
+                {renderAttributeSlider("Elasticidade", "bounciness", 1, 15, 0.1)}
+                {renderAttributeSlider("Aceleração Max", "speed", 1, 15, 0.1)}
               </div>
             </div>
             
             <button
                onClick={handleRandomizePhysics}
-               className="w-full py-4 bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-indigo-600/30 transition-all"
+               className="w-full py-4 bg-indigo-600/20 border border-indigo-500/30 text-indigo-400 rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-indigo-600/30 transition-all font-mono"
             >
               <Dice5 className="w-4 h-4" />
-              Randomizar Mecânica
+              GERAR ESTATÍSTICAS ALEATÓRIAS
             </button>
           </div>
         );
 
       case 'style':
         return (
-          <div className="grid grid-cols-2 gap-3">
-            {Object.entries(BALL_PRESETS).map(([name, preset]) => (
+          <div className="space-y-6">
+            {/* AI Generator Section */}
+            <div className="bg-gradient-to-br from-indigo-900/40 to-purple-900/40 p-6 rounded-[2.5rem] border border-indigo-500/30 shadow-[0_0_40px_rgba(79,70,229,0.15)]">
+              <div className="flex items-center gap-3 mb-4">
+                <Sparkles className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-xs font-black uppercase tracking-widest text-white">AI Ball Generator</h3>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="Nome de um jogador famoso..."
+                    value={playerName}
+                    onChange={(e) => setPlayerName(e.target.value)}
+                    className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-3 text-sm focus:outline-none focus:border-indigo-500 transition-all"
+                  />
+                  <button 
+                    onClick={() => handleAIGeneration(playerName)}
+                    disabled={isGenerating || !playerName}
+                    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2"
+                  >
+                    {isGenerating ? <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                    Gerar
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button 
+                    onClick={handleRandomPlayer}
+                    disabled={isGenerating}
+                    className="px-4 py-2 bg-white/5 hover:bg-white/10 rounded-xl text-[9px] font-bold uppercase tracking-wider border border-white/10 flex items-center gap-2"
+                  >
+                    <Dice5 className="w-3 h-3" />
+                    Jogador Aleatório
+                  </button>
+                  
+                  <div className="relative group/players flex-1">
+                    <select 
+                      onChange={(e) => {
+                        const name = e.target.value;
+                        if (name) {
+                          setPlayerName(name);
+                          handleAIGeneration(name);
+                        }
+                      }}
+                      className="w-full h-full bg-white/5 hover:bg-white/10 px-4 py-2 rounded-xl text-[9px] font-bold uppercase tracking-wider border border-white/10 appearance-none cursor-pointer"
+                    >
+                      <option value="" className="bg-zinc-900">Selecionar da Lista</option>
+                      {FAMOUS_PLAYERS.map(p => (
+                        <option key={p} value={p} className="bg-zinc-900">{p}</option>
+                      ))}
+                    </select>
+                    <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none text-white/40 rotate-90" />
+                  </div>
+
+                  <div className="relative group/teams flex-1">
+                    <select 
+                      onChange={(e) => {
+                        const teamName = e.target.value;
+                        const team = NBA_TEAMS.find(t => t.name === teamName);
+                        setSelectedTeam(team || null);
+                      }}
+                      className="w-full h-full bg-white/5 hover:bg-white/10 px-4 py-2 rounded-xl text-[9px] font-bold uppercase tracking-wider border border-white/10 appearance-none cursor-pointer"
+                    >
+                      <option value="" className="bg-zinc-900">Time Oficial (Opcional)</option>
+                      {NBA_TEAMS.map(t => (
+                        <option key={t.name} value={t.name} className="bg-zinc-900">{t.symbol} {t.name}</option>
+                      ))}
+                    </select>
+                    <ChevronRight className="absolute right-3 top-1/2 -translate-y-1/2 w-3 h-3 pointer-events-none text-white/40 rotate-90" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              {Object.entries(BALL_PRESETS).map(([name, preset]) => (
               <button
                 key={name}
                 onClick={() => updateConfig({ ...DEFAULT_BALL_CONFIG, ...preset })}
@@ -167,6 +295,7 @@ export const BallCustomizer: React.FC<BallCustomizerProps> = ({
                 </div>
               </button>
             ))}
+            </div>
           </div>
         );
 

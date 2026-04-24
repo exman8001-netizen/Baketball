@@ -24,15 +24,16 @@ export interface SpikeTrapConfig {
 export interface PropConfig {
   width: number;
   height: number;
-  type: 'water_bottle' | 'trophy' | 'bench' | 'basketball_rack' | 'cone' | 'whistle';
+  type: 'water_bottle' | 'trophy' | 'bench' | 'basketball_rack' | 'cone' | 'whistle' | 'glass_table' | 'car' | 'pole' | 'crate' | 'barrel' | 'statue';
   color: string;
   isPhysical: boolean;
   mass: number;
+  isBreakable?: boolean;
 }
 
 export interface RoomObject {
   id: string;
-  type: 'hoop' | 'platform' | 'ramp' | 'elevator' | 'spike_trap' | 'prop';
+  type: 'hoop' | 'platform' | 'ramp' | 'elevator' | 'spike_trap' | 'prop' | 'fixed_hoop' | 'bounce_pad' | 'gravity_zone' | 'gate' | 'button' | 'breakable_platform' | 'tape';
   x: number;
   y: number;
   z: number;
@@ -40,13 +41,70 @@ export interface RoomObject {
   height: number;
   angle: number;
   config: any; // specific config (HoopConfig, PlatformConfig, RampConfig, etc.)
-  behavior: 'static' | 'moving' | 'falling' | 'destroyable' | 'physics';
+  behavior: 'static' | 'moving' | 'falling' | 'destroyable' | 'physics' | 'trigger';
+  
+  // Movement System
+  movement?: {
+    type: 'none' | 'horizontal' | 'vertical' | 'circular' | 'path';
+    speed: number;
+    range: number;
+    phase?: number;
+    isActive: boolean;
+  };
+
+  // Logic System
+  logic?: {
+    targetId?: string; // ID of the object this one affects (e.g. door, platform)
+    action?: 'toggle' | 'activate' | 'destroy' | 'boost';
+    state: boolean;
+    requiredTeam?: string;
+  };
+
   isDestroyed?: boolean;
   velocity?: { x: number; y: number };
   angularVelocity?: number;
-  movementRange?: number;
-  movementSpeed?: number;
   initialPos?: { x: number; y: number };
+}
+
+export interface FixedHoopConfig {
+  side: 'left' | 'right' | 'none';
+  hasBackboard: boolean;
+  hasColumn: boolean;
+  color: string;
+  scoreValue: number;
+  moveable?: boolean;
+}
+
+export interface BouncePadConfig {
+  force: number;
+  color: string;
+  cooldown: number;
+}
+
+export interface GravityZoneConfig {
+  gravityMultiplier: number;
+  color: string;
+  shape: 'box' | 'circle';
+}
+
+export interface GateConfig {
+  isOpen: boolean;
+  color: string;
+  closeSpeed: number;
+}
+
+export interface ButtonConfig {
+  pressedColor: string;
+  unpressedColor: string;
+  isToggle: boolean;
+  resetTime: number; // 0 for permanent
+}
+
+export interface WindowConfig {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface RoomConfig {
@@ -58,7 +116,15 @@ export interface RoomConfig {
   maxPlayers: number;
   matchTimeLimit: number; // seconds
   gravityOverride?: number;
+  floorColor?: string;
+  backgroundType?: 'space' | 'street' | 'park' | 'stadium_day' | 'stadium_night' | 'gym' | 'urban';
   objects: RoomObject[];
+  hasWall?: boolean;
+  hasCeiling?: boolean;
+  wallWidth?: number;
+  ceilingHeight?: number;
+  windows?: WindowConfig[];
+  enableEvolution?: boolean;
 }
 
 export interface Player {
@@ -69,9 +135,27 @@ export interface Player {
   z: number;
   score: number;
   baskets: number;
+  kills: number;
+  deaths: number;
+  level: number;
   color: string;
   ballConfig: BallConfig;
   roomId?: string;
+
+  // Persistent / Profile Stats (Simulated)
+  stats?: {
+    totalKills: number;
+    totalDeaths: number;
+    totalBaskets: number;
+    totalScore: number;
+    matchesWon: number;
+    matchesPlayed: number;
+    playtimeHours: number;
+    likes: number;
+    bio: string;
+    favoriteTeam: string;
+    favoritePlayer: string;
+  };
 }
 
 export type BallRarity = 'common' | 'rare' | 'epic' | 'legendary';
@@ -100,6 +184,9 @@ export interface BallConfig {
   showGlow: boolean;
   printText: string;
   printedNumber: string;
+  playerName?: string;
+  teamName?: string;
+  teamLogo?: string; // URL or emoji or special char
 
   // Effects
   trailType: 'none' | 'smoke' | 'fire' | 'electric' | 'neon' | 'particles';
@@ -115,8 +202,14 @@ export interface BallConfig {
   maxHp: number;
   energy: number;
   maxEnergy: number;
+  energyRechargeSpeed: number; // 1 to 10
+  damage: number; // 1 to 10
+  extraJumps: number; // 0 to 5
   airLevel: number; // 0 to 1
   maxAirLevel: number;
+  airXp?: number;
+  level?: number;
+  isLeaking?: boolean;
   knockbackForce: number; // 0 to 10
   weight: number; // impact on physics
   bounciness: number; // impact on physics
@@ -151,6 +244,9 @@ export const DEFAULT_BALL_CONFIG: BallConfig = {
   maxHp: 100,
   energy: 100,
   maxEnergy: 100,
+  energyRechargeSpeed: 5,
+  damage: 5,
+  extraJumps: 1,
   airLevel: 1,
   maxAirLevel: 1,
   knockbackForce: 5,

@@ -33,6 +33,9 @@ export const BallPreview: React.FC<BallPreviewProps> = ({
         showGlow,
         printText,
         printedNumber,
+        playerName,
+        teamName,
+        teamLogo,
         reflectionIntensity,
         airLevel = 1,
         style
@@ -153,12 +156,30 @@ export const BallPreview: React.FC<BallPreviewProps> = ({
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       
-      if (printText) {
+      if (playerName || printText || teamName) {
         ctx.fillStyle = lineColor;
         ctx.shadowBlur = 2;
         ctx.shadowColor = "rgba(0,0,0,0.3)";
-        ctx.font = `black ${radius * 0.22}px sans-serif`;
-        ctx.fillText(printText.toUpperCase(), centerX, centerY - radius * 0.35);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+ 
+        // 1. Player Name (TOP ARCish)
+        if (playerName || printText) {
+          ctx.font = `900 ${radius * 0.15}px sans-serif`;
+          ctx.fillText((playerName || printText).toUpperCase(), centerX, centerY - radius * 0.45);
+        }
+        
+        // 2. Team Logo (CENTER AREA)
+        if (teamLogo) {
+          ctx.font = `${radius * 0.35}px sans-serif`;
+          ctx.fillText(teamLogo, centerX, centerY - radius * 0.1);
+        }
+        
+        // 3. Team Name (BOTTOM AREA)
+        if (teamName) {
+          ctx.font = `bold ${radius * 0.12}px sans-serif`;
+          ctx.fillText(teamName.toUpperCase(), centerX, centerY + radius * 0.4);
+        }
       }
 
       if (printedNumber) {
